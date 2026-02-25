@@ -1,4 +1,6 @@
 /.idea/
+/personA_images/
+/personB_images/
+/face_dataset.zip
 /personA/
 /personB/
-/archive.zip
