@@ -19,12 +19,6 @@ class FaceDataset(Dataset):
         print(str(len(self.image_paths)) + "images imported")
 
         self.transform = transforms.Compose([
-            transforms.RandomAffine(
-                degrees=10,
-                translate=(0.05, 0.05),
-                scale=(0.95, 1.05),
-            ),
-            transforms.RandomHorizontalFlip(p=0.4),
             transforms.ToTensor(),
             transforms.Normalize([0.5]*3, [0.5]*3)
         ])
@@ -41,43 +35,11 @@ class ConvBlock(nn.Module):
         super().__init__()
         self.block = nn.Sequential(
             nn.Conv2d(in_channels=in_ch, out_channels=out_ch, kernel_size=5, stride=2, padding=2),
-            nn.Conv2d(in_channels=out_ch, out_channels=out_ch//2, kernel_size=1, stride=1, padding=0),
-
+            nn.LeakyReLU(0.1, inplace=True)
         )
 
     def forward(self, x):
         return self.block(x)
-
-class EncoderDenseBlock(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(in_channels=in_ch, out_channels=out_ch, kernel_size=5, stride=1, padding=2),
-            nn.Conv2d(in_channels=out_ch, out_channels=out_ch//4, kernel_size=1, stride=1, padding=0),
-            nn.LeakyReLU(0.2, inplace=True),
-        )
-        self.out = nn.Conv2d(in_channels=in_ch + out_ch // 4, out_channels=out_ch, kernel_size=3, stride=2, padding=1)
-
-    def forward(self, x):
-        out1 = self.block(x)
-        out2 = torch.cat([x, out1], dim=1)
-        out3 = self.out(out2)
-        return out3
-
-class DecoderDenseBlock(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super().__init__()
-        self.block = nn.Sequential(
-            nn.Conv2d(in_channels=in_ch, out_channels=4 * out_ch, kernel_size=3, stride=1, padding=1),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        self.pixel_shuffle = nn.PixelShuffle(upscale_factor=2)
-
-    def forward(self, x):
-        out1 = self.block(x)
-        out2 = torch.cat([x, out1], dim=1)
-        out3 = self.pixel_shuffle(out2)
-        return out3
 
 class DeconvolutionBlock(nn.Module):
     def __init__(self, in_ch, out_ch):
@@ -131,64 +93,26 @@ class VGGPerceptualLoss(torch.nn.Module):
 class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
-        # Path 1
-        self.path1_CB16 = ConvBlock(3, 16) # 256 x 256 x 3 -> 128 x 128 x 8
-        self.path1_CB32 = ConvBlock(8, 32) # 128 x 128 x 16 -> 64 x 64 x 16
-        self.path1_DB32 = EncoderDenseBlock(16, 32) # 64 x 64 x 16 -> 32 x 32 x 32
-        self.path1_DB64 = EncoderDenseBlock(32, 64) # 32 x 32 x 32 -> 16 x 16 x 64
-        self.path1_DB128 = EncoderDenseBlock(64, 128)  # 16 x 16 x 64 -> 8 x 8 x 128
-
-        # Path 2
-        self.path2_CB32 = ConvBlock(3,  32) # 256 x 256 x 3 -> 128 x 128 x 16
-        self.path2_CB64 = ConvBlock(16,  64) # 128 x 128 x 16 -> 64 x 64 x 32
-        self.path2_DB128 = EncoderDenseBlock(32, 128)
-        self.path2_DB256 = EncoderDenseBlock(128, 256)
-        self.path2_DB512 = EncoderDenseBlock(256, 512)
-
+        self.convPath = nn.Sequential(
+            ConvBlock(3, 64),
+            ConvBlock(64, 128),
+            ConvBlock(128, 256),
+            ConvBlock(256, 512),
+            ConvBlock(512, 1024),
+        )
         self.flatten = nn.Flatten()
-        self.fc1 = nn.Sequential(
-            nn.Linear(512 * 5 * 5, 1024),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        self.fc2 = nn.Sequential(
-            nn.Linear(1024, 512),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        self.fc3 = nn.Sequential(
-            nn.Linear(512, 1024),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        self.fc4 = nn.Sequential(
-            nn.Linear(1024, 512 * 5 * 5),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
+        self.dense1 = nn.Linear(1024 * 5 * 5, 1024)
+        self.dense2 = nn.Linear(1024, 5 * 5 * 1024)
+        self.deconvPath = DeconvolutionBlock(1024, 512)
 
-        self.deconv2 = DeconvolutionBlock(512, 384)
-        self.deconv1 = DeconvolutionBlock(128, 128)
 
     def forward(self, x):
-        path1 = self.path1_CB16(x)
-        path1 = self.path1_CB32(path1)
-        path1 = self.path1_DB32(path1)
-        path1 = self.path1_DB64(path1)
-        path1 = self.path1_DB128(path1)
-        path1 = self.deconv1(path1)
-
-        path2 = self.path2_CB32(x)
-        path2 = self.path2_CB64(path2)
-        path2 = self.path2_DB128(path2)
-        path2 = self.path2_DB256(path2)
-        path2 = self.path2_DB512(path2)
-
-        path2 = self.flatten(path2)
-        path2 = self.fc1(path2)
-        path2 = self.fc2(path2)
-        path2 = self.fc3(path2)
-        path2 = self.fc4(path2)
-
-        path2 = path2.view(-1, 512, 5, 5)
-        path2 = self.deconv2(path2)
-        out = torch.cat([path1, path2], dim=1)
+        out = self.convPath(x)
+        out = self.flatten(out)
+        out = self.dense1(out)
+        out = self.dense2(out)
+        out = out.view(BATCH_SIZE, 1024, 5, 5)
+        out = self.deconvPath(out)
         return out
 
 class Decoder(nn.Module):
@@ -197,9 +121,9 @@ class Decoder(nn.Module):
         self.net = nn.Sequential(
             DeconvolutionBlock(512, 256),
             DeconvolutionBlock(256, 128),
-            DecoderDenseBlock(128, 64),
-            DecoderDenseBlock(96, 32),
-            nn.Conv2d(in_channels=56, out_channels=3, kernel_size=5, stride=1, padding=2),
+            DeconvolutionBlock(128, 64),
+            DeconvolutionBlock(64, 32),
+            nn.Conv2d(in_channels=32, out_channels=3, kernel_size=5, stride=1, padding=2),
         )
 
     def forward(self, x):
@@ -256,7 +180,7 @@ import os
 import torch
 from torch.utils.data import DataLoader
 
-BATCH_SIZE = 35
+BATCH_SIZE = 30
 LR = 5e-5
 NUM_WORKERS = 1
 
@@ -332,4 +256,4 @@ def train(load = False, epoch = 0):
         save_preview(encoder, decoder_a, decoder_b, sample_a, sample_b, epoch)
 
 if __name__ == "__main__":
-    train(False)
+    train(True, 2)
