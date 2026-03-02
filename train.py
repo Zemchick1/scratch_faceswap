@@ -9,7 +9,7 @@ class FaceDataset(Dataset):
         self.image_paths = []
 
         for filename in os.listdir(folder_path):
-            if filename.lower().endswith('.jpg'):
+            if filename.lower().endswith('.png'):
                 full_path = os.path.join(folder_path, filename)
                 self.image_paths.append(full_path)
 
@@ -94,24 +94,24 @@ class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.convPath = nn.Sequential(
-            ConvBlock(3, 64),
-            ConvBlock(64, 128),
+            ConvBlock(3, 128),
             ConvBlock(128, 256),
             ConvBlock(256, 512),
             ConvBlock(512, 1024),
         )
         self.flatten = nn.Flatten()
-        self.dense1 = nn.Linear(1024 * 5 * 5, 1024)
-        self.dense2 = nn.Linear(1024, 5 * 5 * 1024)
+        self.dense1 = nn.Linear(1024 * 4 * 4, 1024)
+        self.dense2 = nn.Linear(1024, 4 * 4 * 1024)
         self.deconvPath = DeconvolutionBlock(1024, 512)
 
 
     def forward(self, x):
         out = self.convPath(x)
+        print(out.shape)
         out = self.flatten(out)
         out = self.dense1(out)
         out = self.dense2(out)
-        out = out.view(BATCH_SIZE, 1024, 5, 5)
+        out = out.view(out.size(0), 1024, 8, 8)
         out = self.deconvPath(out)
         return out
 
@@ -122,7 +122,6 @@ class Decoder(nn.Module):
             DeconvolutionBlock(512, 256),
             DeconvolutionBlock(256, 128),
             DeconvolutionBlock(128, 64),
-            DeconvolutionBlock(64, 32),
             nn.Conv2d(in_channels=32, out_channels=3, kernel_size=5, stride=1, padding=2),
         )
 
@@ -180,7 +179,7 @@ import os
 import torch
 from torch.utils.data import DataLoader
 
-BATCH_SIZE = 30
+BATCH_SIZE = 27
 LR = 5e-5
 NUM_WORKERS = 1
 
@@ -212,7 +211,6 @@ def train(load = False, epoch = 0):
         lr=LR
     )
 
-    vgg_loss_fn = VGGPerceptualLoss().to("cuda", non_blocking=True)
     loss_fn = nn.L1Loss()
 
     for epoch in range(epoch + 1, 1000):
@@ -230,13 +228,10 @@ def train(load = False, epoch = 0):
             reconstructed_a = decoder_a(latent_a)
             reconstructed_b = decoder_b(latent_b)
 
-            vgg_loss_a = vgg_loss_fn(reconstructed_a, img_a)
-            vgg_loss_b = vgg_loss_fn(reconstructed_b, img_b)
-
             loss_a = loss_fn(reconstructed_a, img_a)
             loss_b = loss_fn(reconstructed_b, img_b)
 
-            loss = loss_a + loss_b + 0.1 * (vgg_loss_a + vgg_loss_b)
+            loss = loss_a + loss_b
 
 
             optimizer.zero_grad()
@@ -256,4 +251,4 @@ def train(load = False, epoch = 0):
         save_preview(encoder, decoder_a, decoder_b, sample_a, sample_b, epoch)
 
 if __name__ == "__main__":
-    train(True, 2)
+    train(False)
