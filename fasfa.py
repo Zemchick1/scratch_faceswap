@@ -9,7 +9,7 @@ from mtcnn import MTCNN
 # ── Settings ──────────────────────────────────────────────────────────────────
 RECURSIVE   = True       # recurse into subdirectories
 OUTPUT_SIZE = 160        # output image size in pixels (square)
-MARGIN      = -0.1       # padding around face; negative = zoom in tighter
+MARGIN      = -0.05       # padding around face; negative = zoom in tighter
 NUM_WORKERS = cpu_count()  # number of parallel workers
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -56,18 +56,23 @@ def crop_face(img_rgb):
 def process_image(args) -> tuple[str, str]:
     """Process a single image. Returns (status, filename)."""
     path, output_dir = args
+    try:
+        img_bgr = cv2.imread(str(path))
+        if img_bgr is None:
+            return "SKIP", path.name
 
-    img_bgr = cv2.imread(str(path))
-    if img_bgr is None:
-        return "SKIP", path.name
+        face = crop_face(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+        if face is None:
+            return "NO FACE", path.name
 
-    face = crop_face(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
-    if face is None:
-        return "NO FACE", path.name
+        out_path = output_dir / path.name
+        cv2.imwrite(str(out_path), cv2.cvtColor(face, cv2.COLOR_RGB2BGR))
+        return "OK", path.name
 
-    out_path = output_dir / path.name
-    cv2.imwrite(str(out_path), cv2.cvtColor(face, cv2.COLOR_RGB2BGR))
-    return "OK", path.name
+    except Exception as e:
+        # Log the exception if you want
+        print(f"[ERROR] {path.name} -> {e}")
+        return "ERROR", path.name
 
 
 def process_dataset(input_dir: str, output_dir: str):
@@ -96,4 +101,5 @@ def process_dataset(input_dir: str, output_dir: str):
 
 
 if __name__ == "__main__":
+    process_dataset("personB_images", "personB")
     process_dataset("personA_images", "personA")
